@@ -46,10 +46,10 @@ def parse (db, tx, message):
     if status == 'valid':
         # Find offer.
         cursor.execute('''SELECT * FROM orders \
-                          WHERE (tx_hash=? AND source=? AND status=?)''', (offer_hash, tx['source'], 'open'))
+                          WHERE (tx_hash=? AND source=? AND (status=? OR status=?))''', (offer_hash, tx['source'], 'open', 'filled'))
         orders = cursor.fetchall()
         cursor.execute('''SELECT * FROM bets \
-                          WHERE (tx_hash=? AND source=? AND status=?)''', (offer_hash, tx['source'], 'open'))
+                          WHERE (tx_hash=? AND source=? AND (status=? OR status=?))''', (offer_hash, tx['source'], 'open', 'filled'))
         bets = cursor.fetchall()
 
         # Cancel if order.

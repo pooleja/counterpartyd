@@ -723,7 +723,7 @@
             "give_quantity": 50000000, 
             "give_remaining": 0, 
             "source": "mn6q3dS2EnDUx3bmyWc6D4szJNVGtaR7zc", 
-            "status": "open", 
+            "status": "filled", 
             "tx_hash": "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986", 
             "tx_index": 2
         }, 
@@ -742,7 +742,7 @@
             "give_quantity": 105000000, 
             "give_remaining": 5000000, 
             "source": "mn6q3dS2EnDUx3bmyWc6D4szJNVGtaR7zc", 
-            "status": "open", 
+            "status": "filled", 
             "tx_hash": "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5", 
             "tx_index": 3
         }, 
