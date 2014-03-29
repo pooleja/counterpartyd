@@ -143,8 +143,8 @@ def match (db, tx):
     tx1 = orders[0]
 
     cursor.execute('''SELECT * FROM orders \
-                      WHERE (give_asset=? AND get_asset=? AND status=?)''',
-                   (tx1['get_asset'], tx1['give_asset'], 'open'))
+                      WHERE (give_asset=? AND get_asset=? AND (status=? OR status=?))''',
+                   (tx1['get_asset'], tx1['give_asset'], 'open', 'filled'))
 
     tx1_give_remaining = tx1['give_remaining']
     tx1_get_remaining = tx1['get_remaining']
@@ -167,11 +167,11 @@ def match (db, tx):
         tx0_fee_provided_remaining = tx0['fee_provided_remaining']
 
         # Make sure that that both orders still have funds remaining.
-        if tx0_give_remaining <= 0 or tx1_give_remaining <= 0:
-            continue
+        # TODO
+        if tx0_give_remaining <= 0 or tx1_give_remaining <= 0: continue
         if tx1['block_index'] >= 292000 or config.TESTNET:  # Protocol change
-            if tx0_get_remaining <= 0 or tx1_get_remaining <= 0:
-                continue
+            if tx0_get_remaining <= 0 or tx1_get_remaining <= 0: continue
+        # TODO
 
         # If the prices agree, make the trade. The found order sets the price,
         # and they trade as much as they can.
@@ -184,7 +184,6 @@ def match (db, tx):
 
         # import sys  # TODO
         # print('foo', tx0_price, tx1_inverse_price, file=sys.stderr) # TODO
-        json_print(tx0) # TODO
         if tx0_price <= tx1_inverse_price:
             forward_quantity = int(min(tx0_give_remaining, int(util.price(tx1_give_remaining, tx0_price, tx1['block_index']))))
             # print('bar1', tx0_give_remaining, int(util.price(tx1_give_remaining, tx0_price, tx1['block_index'])), file=sys.stderr) # TODO
@@ -312,6 +311,7 @@ def expire (db, block_index):
     cursor = db.cursor()
 
     # Expire orders and give refunds for the quantity give_remaining (if non-zero; if not BTC).
+    # NOTE: Filled orders can be opened again, expired orders cannot.
     cursor.execute('''SELECT * FROM orders \
                       WHERE ((status = ? OR status = ?) AND expire_index < ?)''', ('open', 'filled', block_index))
     for order in cursor.fetchall():
@@ -370,22 +370,32 @@ def expire (db, block_index):
                                      (order_match['tx0_index'],)))
         assert len(orders) == 1
         tx0_order = orders[0]
-        tx0_order_time_left = tx0_order['expire_index'] - block_index
-        if tx0_order_time_left >= 0:
-            bindings = {
-                'give_remaining': tx0_order['give_remaining'] + order_match['forward_quantity'],
-                'get_remaining': tx0_order['get_remaining'] + order_match['backward_quantity'],
-                'tx_index': order_match['tx0_index'],
-                'status': 'open'
-            }
-            sql='update orders set give_remaining = :give_remaining, get_remaining = :get_remaining, status = :status where tx_index = :tx_index'
-            cursor.execute(sql, bindings)
-            util.message(db, block_index, 'update', 'orders', bindings)
-        # If tx0 is expired, credit address directly.
-        elif order_match['forward_asset'] != 'BTC':
-            util.credit(db, block_index, order_match['tx0_address'],
-                        order_match['forward_asset'],
-                        order_match['forward_quantity'], event=order_match['id'])
+
+        # If tx0 order is (permanently) dead, credit address directly.
+        if tx0_order['status'] in ('expired', 'cancelled'):
+            tx0_order_status = tx0_order['status']
+            if order_match['forward_asset'] != 'BTC':
+                util.credit(db, block_index, order_match['tx0_address'],
+                            order_match['forward_asset'],
+                            order_match['forward_quantity'], event=order_match['id'])
+            tx0_give_remaining = tx0_order['give_remaining']
+            tx0_get_remaining = tx0_order['get_remaining']
+        else:
+            tx0_give_remaining = tx0_order['give_remaining'] + order_match['forward_quantity']
+            tx0_get_remaining = tx0_order['get_remaining'] + order_match['backward_quantity']
+            tx0_order_status = 'open'
+            if tx0_give_remaining <= 0 or (tx0_get_remaining <= 0 and (block_index >= 292000 or config.TESTNET)):
+                tx1_order_status = 'filled'
+
+        bindings = {
+            'give_remaining': tx0_give_remaining,
+            'get_remaining': tx0_get_remaining,
+            'tx_index': order_match['tx0_index'],
+            'status': tx0_order_status
+        }
+        sql='update orders set give_remaining = :give_remaining, get_remaining = :get_remaining, status = :status where tx_index = :tx_index'
+        cursor.execute(sql, bindings)
+        util.message(db, block_index, 'update', 'orders', bindings)
 
         # If tx1 is still good, replenish give, get remaining.
         orders = list(cursor.execute('''SELECT * FROM orders \
@@ -393,26 +403,36 @@ def expire (db, block_index):
                                      (order_match['tx1_index'],)))
         assert len(orders) == 1
         tx1_order = orders[0]
-        tx1_order_time_left = tx1_order['expire_index'] - block_index
-        if tx1_order_time_left >= 0:
-            bindings = {
-                'give_remaining': tx1_order['give_remaining'] + order_match['backward_quantity'],
-                'get_remaining': tx1_order['get_remaining'] + order_match['forward_quantity'],
-                'tx_index': order_match['tx1_index'],
-                'status': 'open'
-            }
-            sql='update orders set give_remaining = :give_remaining, get_remaining = :get_remaining, status = :status  where tx_index = :tx_index'
-            cursor.execute(sql, bindings)
-            util.message(db, block_index, 'update', 'orders', bindings)
-        # If tx1 is expired, credit address directly.
-        elif order_match['backward_asset'] != 'BTC':
-            util.credit(db, block_index, order_match['tx1_address'],
-                        order_match['backward_asset'],
-                        order_match['backward_quantity'], event=order_match['id'])
 
-        if block_index < 286500:    # Protocol change.
-            # Sanity check: one of the two must have expired.
-            assert tx0_order_time_left or tx1_order_time_left
+        # If tx0 order is (permanently) dead, credit address directly.
+        if tx1_order['status'] in ('expired', 'cancelled'):
+            tx1_order_status = tx1_order['status']
+            if order_match['backward_asset'] != 'BTC':
+                util.credit(db, block_index, order_match['tx1_address'],
+                            order_match['backward_asset'],
+                            order_match['backward_quantity'], event=order_match['id'])
+            tx1_give_remaining = tx1_order['give_remaining']
+            tx1_get_remaining = tx1_order['get_remaining']
+        else:
+            tx1_give_remaining = tx1_order['give_remaining'] + order_match['backward_quantity']
+            tx1_get_remaining = tx1_order['get_remaining'] + order_match['forward_quantity']
+            tx1_order_status = 'open'
+            if tx1_give_remaining <= 0 or (tx1_get_remaining <= 0 and (block_index >= 292000 or config.TESTNET)):
+                tx1_order_status = 'filled'
+
+        bindings = {
+            'give_remaining': tx1_give_remaining,
+            'get_remaining': tx1_get_remaining,
+            'tx_index': order_match['tx1_index'],
+            'status': tx1_order_status
+        }
+        sql='update orders set give_remaining = :give_remaining, get_remaining = :get_remaining, status = :status  where tx_index = :tx_index'
+        cursor.execute(sql, bindings)
+        util.message(db, block_index, 'update', 'orders', bindings)
+
+        if block_index < 286500 or config.TESTNET:    # Protocol change. (Now expiration after fixed number of blocks.)
+            # Sanity check: one of the two must have expired (or been cancelled before it could).
+            assert tx0_order['status'] in ('expired', 'cancelled') or tx1_order['status'] in ('expired', 'cancelled')
 
     cursor.close()
 

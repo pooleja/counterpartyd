@@ -45,6 +45,7 @@ def parse (db, tx, message):
 
     if status == 'valid':
         # Find offer.
+        # NOTE: Filled orders can be opened again, cancelled orders cannot.
         cursor.execute('''SELECT * FROM orders \
                           WHERE (tx_hash=? AND source=? AND (status=? OR status=?))''', (offer_hash, tx['source'], 'open', 'filled'))
         orders = cursor.fetchall()
